@@ -14,14 +14,14 @@ import { colores, fuentes } from '@/theme';
 
 export default function Ajustes() {
   const { miembro, hogar } = useSesion();
-  const { miembros } = useLista(hogar?.id);
+  const { miembros } = useLista(hogar);
   const [editandoNombre, setEditandoNombre] = useState(false);
   const [nombre, setNombre] = useState(miembro?.nombre ?? '');
 
   if (!miembro || !hogar) return null;
 
   const codigo = formatearCodigo(hogar.codigo);
-  const creadorId = miembros[0]?.id; // el primero en entrar es quien creó la casa
+  const creadorId = hogar.creadorId;
 
   const compartir = () =>
     Share.share({
@@ -29,14 +29,14 @@ export default function Ajustes() {
     });
 
   const guardarNombre = async () => {
-    if (nombre.trim()) await cambiarNombre(miembro.id, nombre);
+    if (nombre.trim()) await cambiarNombre(miembro, nombre);
     setEditandoNombre(false);
   };
 
   const salir = () =>
     Alert.alert('¿Salir de esta casa?', 'Dejarás de ver la lista. Podrás volver con el código.', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Salir', style: 'destructive', onPress: () => salirDeCasa(miembro.id, hogar.id) },
+      { text: 'Salir', style: 'destructive', onPress: () => salirDeCasa(miembro) },
     ]);
 
   return (

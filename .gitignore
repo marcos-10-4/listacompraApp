@@ -40,7 +40,7 @@ yarn-error.*
 /ios
 /android
 
-# InstantDB App ID (cada uno pone el suyo)
+# Configuración de Firebase (cada uno pone la suya)
 .env
 
 # Ajustes locales de herramientas

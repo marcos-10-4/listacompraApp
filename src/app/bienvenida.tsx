@@ -12,12 +12,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Boton } from '@/components/Boton';
-import { useSesion } from '@/hooks/useSesion';
 import { crearPerfil } from '@/lib/acciones';
 import { colores, fuentes } from '@/theme';
 
 export default function Bienvenida() {
-  const { usuario } = useSesion();
   const [nombre, setNombre] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +25,7 @@ export default function Bienvenida() {
     setGuardando(true);
     setError(null);
     try {
-      await crearPerfil(nombre, usuario?.id);
+      await crearPerfil(nombre);
       // La navegación a "unirse" ocurre sola al cambiar el estado de la sesión.
     } catch {
       setError('No se ha podido guardar. ¿Tienes conexión? Inténtalo de nuevo.');

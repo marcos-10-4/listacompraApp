@@ -29,7 +29,7 @@ export default function Unirse() {
     setCreando(true);
     setError(null);
     try {
-      await crearHogar(miembro.id);
+      await crearHogar(miembro);
     } catch {
       setError('No se ha podido crear la lista. Inténtalo de nuevo.');
       setCreando(false);
@@ -40,7 +40,7 @@ export default function Unirse() {
     setUniendo(true);
     setError(null);
     try {
-      await unirseConCodigo(miembro.id, codigo);
+      await unirseConCodigo(miembro, codigo);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se ha podido unir. ¿Tienes conexión?');
       setUniendo(false);

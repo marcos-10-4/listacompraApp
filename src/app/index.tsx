@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Link } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -24,22 +24,22 @@ import {
   marcarComprado,
   vaciarComprados,
 } from '@/lib/acciones';
-import { db } from '@/lib/db';
 import { colores, fuentes } from '@/theme';
 
 export default function Lista() {
   const { miembro, hogar } = useSesion();
-  const { isLoading, pendientes, comprados, miembros } = useLista(hogar?.id);
-  const conexion = db.useConnectionStatus();
+  const { cargando, sincronizado, pendientes, comprados, miembros } = useLista(hogar);
   const [texto, setTexto] = useState('');
+  const miembrosPorId = useMemo(
+    () => Object.fromEntries(miembros.map((m) => [m.id, m])),
+    [miembros]
+  );
 
   if (!miembro || !hogar) return null;
 
-  const sincronizado = conexion === 'authenticated';
-
   const anadir = () => {
     if (!texto.trim()) return;
-    anadirProducto(hogar.id, miembro.id, texto);
+    anadirProducto(hogar.id, miembro, texto);
     setTexto('');
   };
 
@@ -94,7 +94,7 @@ export default function Lista() {
         <ScrollView contentContainerStyle={styles.lista} keyboardShouldPersistTaps="handled">
           <Text style={styles.seccion}>Por comprar · {pendientes.length}</Text>
 
-          {isLoading ? (
+          {cargando ? (
             <ActivityIndicator color={colores.primario} style={{ marginTop: 24 }} />
           ) : pendientes.length === 0 ? (
             <View style={styles.vacio}>
@@ -106,7 +106,9 @@ export default function Lista() {
               <FilaPendiente
                 key={p.id}
                 producto={p}
-                onAlternar={() => marcarComprado(p.id, miembro.id)}
+                hogarId={hogar.id}
+                miembros={miembrosPorId}
+                onAlternar={() => marcarComprado(hogar.id, p.id, miembro)}
               />
             ))
           )}
@@ -116,7 +118,7 @@ export default function Lista() {
               <View style={styles.filaComprados}>
                 <Text style={styles.seccion}>Comprados · {comprados.length}</Text>
                 <Pressable
-                  onPress={() => vaciarComprados(comprados.map((p) => p.id))}
+                  onPress={() => vaciarComprados(hogar.id, comprados.map((p) => p.id))}
                   accessibilityRole="button"
                   style={styles.botonTexto}
                 >
@@ -127,7 +129,9 @@ export default function Lista() {
                 <FilaComprado
                   key={p.id}
                   producto={p}
-                  onAlternar={() => desmarcarComprado(p.id, p.compradoPor?.id)}
+                  hogarId={hogar.id}
+                  miembros={miembrosPorId}
+                  onAlternar={() => desmarcarComprado(hogar.id, p.id)}
                 />
               ))}
             </>

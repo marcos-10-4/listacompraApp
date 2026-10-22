@@ -1,0 +1,119 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firestore: cada casa solo ve y toca lo suyo.
+// Súbelas con: npx firebase-tools deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function autenticado() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function rutaHogar(id) { return /databases/$(database)/documents/hogares/$(id); }
+    function esMiembroDe(hogarId) {
+      return autenticado() && uid() in get(rutaHogar(hogarId)).data.miembros;
+    }
+    // Solo cambian estos campos del documento
+    function soloCambia(campos) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+    function nombreValido(nombre, max) {
+      return nombre is string && nombre.size() > 0 && nombre.size() <= max;
+    }
+
+    /* ── Perfil de cada persona ── */
+    match /miembros/{miembroId} {
+      allow read, delete: if autenticado() && uid() == miembroId;
+
+      allow create: if autenticado() && uid() == miembroId
+        && request.resource.data.keys().hasOnly(['nombre', 'color', 'hogarId', 'creadoEn'])
+        && nombreValido(request.resource.data.nombre, 30)
+        && request.resource.data.hogarId == null;
+
+      // Solo puede apuntar a una casa en la que realmente esté (tras el mismo lote de escrituras)
+      allow update: if autenticado() && uid() == miembroId
+        && soloCambia(['nombre', 'hogarId'])
+        && nombreValido(request.resource.data.nombre, 30)
+        && (request.resource.data.hogarId == null
+            || uid() in getAfter(rutaHogar(request.resource.data.hogarId)).data.miembros);
+    }
+
+    /* ── Códigos de invitación ── */
+    match /codigos/{codigo} {
+      // Se puede consultar un código concreto, pero no listar todos.
+      allow get: if autenticado();
+      allow list: if false;
+
+      // Solo quien crea la casa crea su código; si ya existe, se rechaza (sería un update).
+      allow create: if autenticado()
+        && getAfter(rutaHogar(request.resource.data.hogarId)).data.codigo == codigo
+        && getAfter(rutaHogar(request.resource.data.hogarId)).data.creadorId == uid();
+      allow update, delete: if false;
+
+      // Escribir aquí demuestra que se conoce el código (necesario para unirse a la casa).
+      match /uniones/{unionUid} {
+        allow create, update: if autenticado() && unionUid == uid()
+          && exists(/databases/$(database)/documents/codigos/$(codigo));
+        allow read, delete: if false;
+      }
+    }
+
+    /* ── La casa ── */
+    match /hogares/{hogarId} {
+      function antes() { return resource.data.miembros.toSet(); }
+      function despues() { return request.resource.data.miembros.toSet(); }
+      function soloSuPerfil() {
+        return request.resource.data.perfiles.diff(resource.data.perfiles).affectedKeys().hasOnly([uid()]);
+      }
+
+      // Un miembro cambia su propio perfil (su nombre) o el nombre de la casa
+      function actualizaPerfil() {
+        return uid() in resource.data.miembros
+          && soloCambia(['perfiles', 'nombre'])
+          && soloSuPerfil();
+      }
+      // Alguien con el código se añade a sí mismo
+      function seUne() {
+        return !(uid() in resource.data.miembros)
+          && soloCambia(['miembros', 'perfiles'])
+          && despues() == antes().union([uid()].toSet())
+          && soloSuPerfil()
+          && existsAfter(/databases/$(database)/documents/codigos/$(resource.data.codigo)/uniones/$(uid()));
+      }
+      // Un miembro se quita a sí mismo
+      function seVa() {
+        return uid() in resource.data.miembros
+          && soloCambia(['miembros', 'perfiles'])
+          && despues() == antes().difference([uid()].toSet())
+          && soloSuPerfil();
+      }
+
+      allow read: if autenticado() && uid() in resource.data.miembros;
+
+      allow create: if autenticado()
+        && request.resource.data.keys().hasOnly(['nombre', 'codigo', 'creadorId', 'creadoEn', 'miembros', 'perfiles'])
+        && request.resource.data.creadorId == uid()
+        && request.resource.data.miembros == [uid()]
+        && request.resource.data.codigo is string && request.resource.data.codigo.size() == 6
+        && getAfter(/databases/$(database)/documents/codigos/$(request.resource.data.codigo)).data.hogarId == hogarId;
+
+      allow update: if autenticado() && (actualizaPerfil() || seUne() || seVa());
+      allow delete: if false;
+
+      /* ── Productos de la lista ── */
+      match /productos/{productoId} {
+        function productoValido() {
+          let p = request.resource.data;
+          return p.keys().hasOnly(['nombre', 'cantidad', 'comprado', 'creadoEn', 'compradoEn',
+                                   'anadidoPorId', 'anadidoPorNombre', 'compradoPorId', 'compradoPorNombre'])
+            && nombreValido(p.nombre, 60)
+            && p.comprado is bool;
+        }
+
+        allow read, delete: if esMiembroDe(hogarId);
+        allow create: if esMiembroDe(hogarId) && productoValido()
+          && request.resource.data.anadidoPorId == uid();
+        allow update: if esMiembroDe(hogarId) && productoValido()
+          && soloCambia(['nombre', 'cantidad', 'comprado', 'compradoEn', 'compradoPorId', 'compradoPorNombre']);
+      }
+    }
+  }
+}

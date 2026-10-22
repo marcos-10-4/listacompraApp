@@ -1,5 +1,3 @@
-import 'react-native-get-random-values'; // InstantDB lo necesita para generar ids
-
 import {
   Manrope_400Regular,
   Manrope_500Medium,

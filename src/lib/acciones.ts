@@ -1,42 +1,78 @@
 // Todo lo que escribe en la base de datos está aquí, para que las pantallas solo pinten.
-import { id } from '@instantdb/react-native';
+import { signInAnonymously } from 'firebase/auth';
+import {
+  arrayRemove,
+  arrayUnion,
+  collection,
+  deleteDoc,
+  deleteField,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from 'firebase/firestore';
 
-import { db } from './db';
+import { auth, db } from './firebase';
 import { generarCodigo, normalizarCodigo } from './codigo';
 import { capitalizar, colorAleatorio } from './miembros';
+import type { Miembro } from './tipos';
 
-/** Primera vez: entra como invitado (sin contraseña) y crea su perfil con su nombre. */
-export async function crearPerfil(nombre: string, usuarioIdActual?: string) {
-  let usuarioId = usuarioIdActual;
-  if (!usuarioId) {
-    const respuesta = await db.auth.signInAsGuest();
-    usuarioId = respuesta.user.id;
+// Las escrituras de productos no se esperan (no se hace await): Firestore las aplica al momento
+// en el móvil y las manda al servidor cuando hay conexión. Si se esperasen, sin cobertura la
+// app se quedaría "colgada" hasta recuperar la señal.
+function enSegundoPlano(promesa: Promise<unknown>) {
+  promesa.catch((e) => console.warn('No se pudo guardar el cambio:', e));
+}
+
+/* ───────────── Perfil ───────────── */
+
+/** Primera vez: entra como usuario anónimo (sin contraseña) y crea su perfil con su nombre. */
+export async function crearPerfil(nombre: string) {
+  const usuario = auth.currentUser ?? (await signInAnonymously(auth)).user;
+  await setDoc(doc(db, 'miembros', usuario.uid), {
+    nombre: capitalizar(nombre),
+    color: colorAleatorio(),
+    hogarId: null,
+    creadoEn: Date.now(),
+  });
+}
+
+/** Cambia el nombre en su perfil y en la ficha de la casa (donde lo ven los demás). */
+export async function cambiarNombre(miembro: Miembro, nombre: string) {
+  const limpio = capitalizar(nombre);
+  const lote = writeBatch(db);
+  lote.update(doc(db, 'miembros', miembro.id), { nombre: limpio });
+  if (miembro.hogarId) {
+    lote.update(doc(db, 'hogares', miembro.hogarId), { [`perfiles.${miembro.id}.nombre`]: limpio });
   }
-  await db.transact(
-    db.tx.miembros[id()]
-      .update({ nombre: capitalizar(nombre), color: colorAleatorio(), creadoEn: Date.now() })
-      .link({ $user: usuarioId })
-  );
+  enSegundoPlano(lote.commit());
 }
 
-export function cambiarNombre(miembroId: string, nombre: string) {
-  return db.transact(db.tx.miembros[miembroId].update({ nombre: capitalizar(nombre) }));
-}
+/* ───────────── Casa ───────────── */
 
-/** Crea la casa con un código de invitación y mete dentro a quien la crea. */
-export async function crearHogar(miembroId: string) {
-  // El código es único en el esquema; si por mala suerte ya existe, se prueba otro.
+/** Crea la casa con un código de invitación único y mete dentro a quien la crea. */
+export async function crearHogar(miembro: Miembro) {
+  // Si el código ya existiera, las reglas rechazan el lote y se prueba con otro.
   for (let intento = 0; intento < 3; intento++) {
-    const hogarId = id();
+    const codigo = generarCodigo();
+    const hogarRef = doc(collection(db, 'hogares'));
+    const ahora = Date.now();
+    const lote = writeBatch(db);
+
+    lote.set(hogarRef, {
+      nombre: 'Casa',
+      codigo,
+      creadorId: miembro.id,
+      creadoEn: ahora,
+      miembros: [miembro.id],
+      perfiles: { [miembro.id]: { nombre: miembro.nombre, color: miembro.color, unidoEn: ahora } },
+    });
+    lote.set(doc(db, 'codigos', codigo), { hogarId: hogarRef.id, creadoEn: ahora });
+    lote.update(doc(db, 'miembros', miembro.id), { hogarId: hogarRef.id });
+
     try {
-      await db.transact([
-        db.tx.hogares[hogarId].update({
-          nombre: 'Casa',
-          codigo: generarCodigo(),
-          creadoEn: Date.now(),
-        }),
-        db.tx.miembros[miembroId].link({ hogar: hogarId }),
-      ]);
+      await lote.commit();
       return;
     } catch (e) {
       if (intento === 2) throw e;
@@ -45,55 +81,88 @@ export async function crearHogar(miembroId: string) {
 }
 
 /** Busca la casa por su código y se une a ella. Necesita conexión. */
-export async function unirseConCodigo(miembroId: string, texto: string) {
+export async function unirseConCodigo(miembro: Miembro, texto: string) {
   const codigo = normalizarCodigo(texto);
   if (codigo.length !== 6) {
     throw new Error('El código tiene 6 caracteres, por ejemplo K7P-4QX.');
   }
 
-  const { data } = await db.queryOnce(
-    { hogares: { $: { where: { codigo } } } },
-    { ruleParams: { codigo } }
-  );
-  const hogar = data.hogares[0];
-  if (!hogar) {
+  const snap = await getDoc(doc(db, 'codigos', codigo));
+  if (!snap.exists()) {
     throw new Error('No hay ninguna casa con ese código. Revísalo con quien te lo pasó.');
   }
+  const hogarId = snap.data().hogarId as string;
+  const ahora = Date.now();
 
-  await db.transact(
-    db.tx.hogares[hogar.id].ruleParams({ codigo }).link({ miembros: miembroId })
+  const lote = writeBatch(db);
+  // Esta "unión" demuestra a las reglas de seguridad que conoce el código.
+  lote.set(doc(db, 'codigos', codigo, 'uniones', miembro.id), { creadoEn: ahora });
+  lote.update(doc(db, 'hogares', hogarId), {
+    miembros: arrayUnion(miembro.id),
+    [`perfiles.${miembro.id}`]: { nombre: miembro.nombre, color: miembro.color, unidoEn: ahora },
+  });
+  lote.update(doc(db, 'miembros', miembro.id), { hogarId });
+  await lote.commit();
+}
+
+export async function salirDeCasa(miembro: Miembro) {
+  if (!miembro.hogarId) return;
+  const lote = writeBatch(db);
+  lote.update(doc(db, 'hogares', miembro.hogarId), {
+    miembros: arrayRemove(miembro.id),
+    [`perfiles.${miembro.id}`]: deleteField(),
+  });
+  lote.update(doc(db, 'miembros', miembro.id), { hogarId: null });
+  await lote.commit();
+}
+
+/* ───────────── Productos ───────────── */
+
+function productos(hogarId: string) {
+  return collection(db, 'hogares', hogarId, 'productos');
+}
+
+export function anadirProducto(hogarId: string, miembro: Miembro, nombre: string) {
+  enSegundoPlano(
+    setDoc(doc(productos(hogarId)), {
+      nombre: capitalizar(nombre),
+      comprado: false,
+      creadoEn: Date.now(),
+      anadidoPorId: miembro.id,
+      anadidoPorNombre: miembro.nombre,
+    })
   );
 }
 
-export function salirDeCasa(miembroId: string, hogarId: string) {
-  return db.transact(db.tx.miembros[miembroId].unlink({ hogar: hogarId }));
-}
-
-export function anadirProducto(hogarId: string, miembroId: string, nombre: string) {
-  return db.transact(
-    db.tx.productos[id()]
-      .update({ nombre: capitalizar(nombre), comprado: false, creadoEn: Date.now() })
-      .link({ hogar: hogarId, anadidoPor: miembroId })
+export function marcarComprado(hogarId: string, productoId: string, miembro: Miembro) {
+  enSegundoPlano(
+    updateDoc(doc(productos(hogarId), productoId), {
+      comprado: true,
+      compradoEn: Date.now(),
+      compradoPorId: miembro.id,
+      compradoPorNombre: miembro.nombre,
+    })
   );
 }
 
-export function marcarComprado(productoId: string, miembroId: string) {
-  return db.transact(
-    db.tx.productos[productoId]
-      .update({ comprado: true, compradoEn: Date.now() })
-      .link({ compradoPor: miembroId })
+export function desmarcarComprado(hogarId: string, productoId: string) {
+  enSegundoPlano(
+    updateDoc(doc(productos(hogarId), productoId), {
+      comprado: false,
+      compradoEn: null,
+      compradoPorId: null,
+      compradoPorNombre: null,
+    })
   );
 }
 
-export function desmarcarComprado(productoId: string, compradoPorId?: string) {
-  const chunk = db.tx.productos[productoId].update({ comprado: false, compradoEn: null });
-  return db.transact(compradoPorId ? chunk.unlink({ compradoPor: compradoPorId }) : chunk);
+export function borrarProducto(hogarId: string, productoId: string) {
+  enSegundoPlano(deleteDoc(doc(productos(hogarId), productoId)));
 }
 
-export function borrarProducto(productoId: string) {
-  return db.transact(db.tx.productos[productoId].delete());
-}
-
-export function vaciarComprados(productoIds: string[]) {
-  return db.transact(productoIds.map((pid) => db.tx.productos[pid].delete()));
+export function vaciarComprados(hogarId: string, productoIds: string[]) {
+  // Un lote admite hasta 500 operaciones; de sobra para una lista de la compra.
+  const lote = writeBatch(db);
+  productoIds.forEach((id) => lote.delete(doc(productos(hogarId), id)));
+  enSegundoPlano(lote.commit());
 }

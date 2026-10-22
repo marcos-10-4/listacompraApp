@@ -1,48 +1,55 @@
-import type { InstaQLEntity } from '@instantdb/react-native';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
 
-import type { AppSchema } from '../../instant.schema';
-import { db } from '@/lib/db';
-
-// En InstantDB los enlaces se piden con un objeto vacío: { anadidoPor: {} }
-/* eslint-disable @typescript-eslint/no-empty-object-type */
-export type Producto = InstaQLEntity<
-  AppSchema,
-  'productos',
-  { anadidoPor: {}; compradoPor: {} }
->;
-/* eslint-enable @typescript-eslint/no-empty-object-type */
-export type MiembroCasa = InstaQLEntity<AppSchema, 'miembros'>;
+import { db } from '@/lib/firebase';
+import type { Hogar, MiembroCasa, Producto } from '@/lib/tipos';
 
 /** La lista de la casa en tiempo real, separada en pendientes y comprados. */
-export function useLista(hogarId: string | undefined) {
-  const { isLoading, error, data } = db.useQuery(
-    hogarId
-      ? {
-          hogares: {
-            $: { where: { id: hogarId } },
-            miembros: {},
-            productos: { anadidoPor: {}, compradoPor: {} },
-          },
-        }
-      : null
-  );
+export function useLista(hogar: Hogar | null) {
+  const hogarId = hogar?.id;
+  const [lectura, setLectura] = useState<{
+    hogarId: string;
+    productos: Producto[];
+    // true cuando todo está guardado en el servidor; false sin conexión o con cambios pendientes
+    sincronizado: boolean;
+  } | null>(null);
 
-  const hogar = data?.hogares?.[0];
-  const productos: Producto[] = hogar?.productos ?? [];
-  const miembros: MiembroCasa[] = [...(hogar?.miembros ?? [])].sort(
-    (a, b) => Number(new Date(a.creadoEn)) - Number(new Date(b.creadoEn))
+  useEffect(() => {
+    if (!hogarId) return;
+    return onSnapshot(
+      collection(db, 'hogares', hogarId, 'productos'),
+      { includeMetadataChanges: true },
+      (snap) =>
+        setLectura({
+          hogarId,
+          productos: snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Producto),
+          sincronizado: !snap.metadata.fromCache && !snap.metadata.hasPendingWrites,
+        }),
+      () => setLectura({ hogarId, productos: [], sincronizado: false })
+    );
+  }, [hogarId]);
+
+  const actual = lectura && lectura.hogarId === hogarId ? lectura : null;
+  const cargando = !actual;
+  const productos = actual?.productos ?? [];
+  const sincronizado = actual?.sincronizado ?? false;
+
+  const miembros: MiembroCasa[] = useMemo(
+    () =>
+      Object.entries(hogar?.perfiles ?? {})
+        .filter(([id]) => hogar?.miembros.includes(id))
+        .map(([id, p]) => ({ id, ...p }))
+        .sort((a, b) => a.unidoEn - b.unidoEn),
+    [hogar]
   );
 
   // Lo último que se ha añadido, arriba. Lo último que se ha comprado, arriba.
   const pendientes = productos
     .filter((p) => !p.comprado)
-    .sort((a, b) => Number(new Date(b.creadoEn)) - Number(new Date(a.creadoEn)));
+    .sort((a, b) => b.creadoEn - a.creadoEn);
   const comprados = productos
     .filter((p) => p.comprado)
-    .sort(
-      (a, b) =>
-        Number(new Date(b.compradoEn ?? 0)) - Number(new Date(a.compradoEn ?? 0))
-    );
+    .sort((a, b) => (b.compradoEn ?? 0) - (a.compradoEn ?? 0));
 
-  return { isLoading, error, pendientes, comprados, miembros };
+  return { cargando, sincronizado, pendientes, comprados, miembros };
 }
