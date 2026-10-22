@@ -42,3 +42,6 @@ yarn-error.*
 
 # InstantDB App ID (cada uno pone el suyo)
 .env
+
+# Ajustes locales de herramientas
+.claude/
