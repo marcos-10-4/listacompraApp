@@ -25,11 +25,18 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      "expo-status-bar"
     ],
     "scheme": "listacompra",
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "77039f96-993d-4cee-8ab7-16cc9fcf9289"
+      }
     }
   }
 }
